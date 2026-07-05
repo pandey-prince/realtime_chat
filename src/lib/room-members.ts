@@ -2,13 +2,15 @@ import { redis } from "./redis";
 
 export const roomTokensKey = (roomId: string) => `tokens:${roomId}`;
 
+export const roomAuthCookieName = (roomId: string) => `auth_${roomId}`;
+
 type JoinResult = "joined" | "already" | "full";
 
 export async function tryJoinRoom(
   roomId: string,
   token: string,
 ): Promise<JoinResult> {
-  const result = await redis.eval<number>(
+  const result = await redis.eval(
     `
     if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
       return 2
@@ -23,8 +25,10 @@ export async function tryJoinRoom(
     [token],
   );
 
-  if (result === 2) return "already";
-  if (result === 0) return "full";
+  const code = Number(result);
+
+  if (code === 2) return "already";
+  if (code === 0) return "full";
   return "joined";
 }
 

@@ -1,5 +1,3 @@
-import { client } from "@/lib/client";
-
 type JoinResult = "ok" | "full" | "not-found" | "error";
 
 const joinFlights = new Map<string, Promise<JoinResult>>();
@@ -10,7 +8,10 @@ export async function ensureRoomJoin(roomId: string): Promise<JoinResult> {
 
   const flight = (async () => {
     try {
-      const res = await client.room.join.post({}, { query: { roomId } });
+      const res = await fetch(`/api/room/join?roomId=${encodeURIComponent(roomId)}`, {
+        method: "POST",
+        credentials: "include",
+      });
 
       if (res.status === 200) return "ok";
       if (res.status === 403) return "full";

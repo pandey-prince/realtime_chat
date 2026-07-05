@@ -1,4 +1,4 @@
-import { isRoomMember } from "@/lib/room-members";
+import { isRoomMember, roomAuthCookieName } from "@/lib/room-members";
 import Elysia from "elysia";
 
 class AuthError extends Error {
@@ -18,7 +18,9 @@ export const authMiddleware = new Elysia({ name: "auth" })
   })
   .derive({ as: "scoped" }, async ({ query, cookie }) => {
     const roomId = query.roomId;
-    const token = cookie["x-auth-token"].value as string | undefined;
+    const token =
+      (cookie[roomAuthCookieName(roomId)]?.value as string | undefined) ??
+      (cookie["x-auth-token"]?.value as string | undefined);
 
     if (!roomId || !token) {
       throw new AuthError("Missing roomId or token.");

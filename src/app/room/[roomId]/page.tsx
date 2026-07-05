@@ -47,7 +47,10 @@ const Page = () => {
 
       if (result === "ok") {
         setJoined(true);
+        return;
       }
+
+      router.push("/?error=room-not-found");
     });
 
     return () => {
