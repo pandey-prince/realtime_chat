@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { redis } from "./lib/redis";
+import {
+  isRoomMember,
+  syncRoomTokensExpiry,
+  tryJoinRoom,
+} from "./lib/room-members";
 import { nanoid } from "nanoid";
 
 export const proxy = async (req: NextRequest) => {
@@ -10,40 +15,34 @@ export const proxy = async (req: NextRequest) => {
 
   const roomId = roomMatch[1];
 
-  const meta = await redis.hgetall<{ connected: string[]; createdAt: number }>(
-    `meta:${roomId}`,
-  );
+  const meta = await redis.hgetall<{ createdAt: number }>(`meta:${roomId}`);
 
   if (!meta) {
     return NextResponse.redirect(new URL("/?error=room-not-found", req.url));
   }
 
-  const connected = Array.isArray(meta.connected) ? meta.connected : [];
   const existingToken = req.cookies.get("x-auth-token")?.value;
 
-  // USER IS ALLOWED TO JOIN ROOM
-  if (existingToken && connected.includes(existingToken)) {
+  if (existingToken && (await isRoomMember(roomId, existingToken))) {
     return NextResponse.next();
   }
 
-  // USER IS NOT ALLOWED TO JOIN
-  if (connected.length >= 2) {
+  const token = nanoid();
+  const joinResult = await tryJoinRoom(roomId, token);
+
+  if (joinResult === "full") {
     return NextResponse.redirect(new URL("/?error=room-full", req.url));
   }
 
-  const response = NextResponse.next();
+  await syncRoomTokensExpiry(roomId);
 
-  const token = nanoid();
+  const response = NextResponse.next();
 
   response.cookies.set("x-auth-token", token, {
     path: "/",
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-  });
-
-  await redis.hset(`meta:${roomId}`, {
-    connected: [...connected, token],
   });
 
   return response;

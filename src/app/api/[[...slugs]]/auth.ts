@@ -1,4 +1,4 @@
-import { redis } from "@/lib/redis";
+import { isRoomMember } from "@/lib/room-members";
 import Elysia from "elysia";
 
 class AuthError extends Error {
@@ -24,15 +24,9 @@ export const authMiddleware = new Elysia({ name: "auth" })
       throw new AuthError("Missing roomId or token.");
     }
 
-    const connectedRaw = await redis.hget<string[]>(
-      `meta:${roomId}`,
-      "connected",
-    );
-    const connected = Array.isArray(connectedRaw) ? connectedRaw : [];
-
-    if (!connected.includes(token)) {
+    if (!(await isRoomMember(roomId, token))) {
       throw new AuthError("Invalid token");
     }
 
-    return { auth: { roomId, token, connected } };
+    return { auth: { roomId, token } };
   });
