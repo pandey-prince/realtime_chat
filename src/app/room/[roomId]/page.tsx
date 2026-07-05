@@ -1,12 +1,13 @@
 "use client";
 
 import { useUsername } from "@/hooks/use-username";
+import { ensureRoomJoin } from "@/hooks/use-room-join";
 import { client } from "@/lib/client";
 import { useRealtime } from "@/lib/realtime-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useParams, useRouter } from "next/navigation";
-import { use, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 function formatTimeRemaining(seconds: number) {
   const mins = Math.floor(seconds / 60);
@@ -26,9 +27,37 @@ const Page = () => {
 
   const [copyStatus, setCopyStatus] = useState("COPY");
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
+  const [joined, setJoined] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    ensureRoomJoin(roomId).then((result) => {
+      if (cancelled) return;
+
+      if (result === "full") {
+        router.push("/?error=room-full");
+        return;
+      }
+
+      if (result === "not-found") {
+        router.push("/?error=room-not-found");
+        return;
+      }
+
+      if (result === "ok") {
+        setJoined(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, router]);
 
   const { data: ttlData } = useQuery({
     queryKey: ["ttl", roomId],
+    enabled: joined,
     queryFn: async () => {
       const res = await client.room.ttl.get({ query: { roomId } });
       return res.data;
@@ -62,6 +91,7 @@ const Page = () => {
 
   const { data: messages, refetch } = useQuery({
     queryKey: ["messages", roomId],
+    enabled: joined,
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
       return res.data;

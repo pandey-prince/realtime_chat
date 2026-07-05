@@ -1,4 +1,9 @@
 import { redis } from "@/lib/redis";
+import {
+  isRoomMember,
+  syncRoomTokensExpiry,
+  tryJoinRoom,
+} from "@/lib/room-members";
 import { Elysia } from "elysia";
 import { nanoid } from "nanoid";
 import { authMiddleware } from "./auth";
@@ -19,6 +24,45 @@ const rooms = new Elysia({ prefix: "/room" })
 
     return { roomId };
   })
+  .post(
+    "/join",
+    async ({ query, cookie, set }) => {
+      const { roomId } = query;
+
+      const roomExists = await redis.exists(`meta:${roomId}`);
+      if (!roomExists) {
+        set.status = 404;
+        return { error: "room-not-found" };
+      }
+
+      const existing = cookie["x-auth-token"]?.value as string | undefined;
+
+      if (existing && (await isRoomMember(roomId, existing))) {
+        return { ok: true };
+      }
+
+      const token = nanoid();
+      const joinResult = await tryJoinRoom(roomId, token);
+
+      if (joinResult === "full") {
+        set.status = 403;
+        return { error: "room-full" };
+      }
+
+      await syncRoomTokensExpiry(roomId);
+
+      cookie["x-auth-token"].set({
+        value: token,
+        httpOnly: true,
+        path: "/",
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+      });
+
+      return { ok: true };
+    },
+    { query: z.object({ roomId: z.string() }) },
+  )
   .use(authMiddleware)
   .get(
     "/ttl",
