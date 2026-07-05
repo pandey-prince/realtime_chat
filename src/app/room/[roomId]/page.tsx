@@ -4,10 +4,24 @@ import { useUsername } from "@/hooks/use-username";
 import { ensureRoomJoin } from "@/hooks/use-room-join";
 import { client } from "@/lib/client";
 import { useRealtime } from "@/lib/realtime-client";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import type { Message } from "@/lib/realtime";
+
+type MessagesCache = { messages: Message[] };
+
+const messagesKey = (roomId: string) => ["messages", roomId] as const;
+
+const appendMessage = (
+  cache: MessagesCache | undefined,
+  message: Message,
+): MessagesCache => {
+  const messages = cache?.messages ?? [];
+  if (messages.some((m) => m.id === message.id)) return { messages };
+  return { messages: [...messages, message] };
+};
 
 function formatTimeRemaining(seconds: number) {
   const mins = Math.floor(seconds / 60);
@@ -20,6 +34,7 @@ const Page = () => {
   const roomId = params.roomId as string;
 
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const { username } = useUsername();
   const [input, setInput] = useState("");
@@ -92,8 +107,8 @@ const Page = () => {
     return () => clearInterval(interval);
   }, [timeRemaining, router]);
 
-  const { data: messages, refetch } = useQuery({
-    queryKey: ["messages", roomId],
+  const { data: messages } = useQuery({
+    queryKey: messagesKey(roomId),
     enabled: joined,
     queryFn: async () => {
       const res = await client.messages.get({ query: { roomId } });
@@ -103,24 +118,61 @@ const Page = () => {
 
   const { mutate: sendMessage, isPending } = useMutation({
     mutationFn: async ({ text }: { text: string }) => {
-      await client.messages.post(
+      const res = await client.messages.post(
         { sender: username, text },
         { query: { roomId } },
       );
 
+      return res.data as Message | null;
+    },
+    onMutate: async ({ text }) => {
+      await queryClient.cancelQueries({ queryKey: messagesKey(roomId) });
+
+      const optimistic: Message = {
+        id: `pending-${Date.now()}`,
+        sender: username,
+        text,
+        timestamp: Date.now(),
+        roomId,
+      };
+
+      queryClient.setQueryData<MessagesCache>(messagesKey(roomId), (old) =>
+        appendMessage(old, optimistic),
+      );
+
       setInput("");
+
+      return { optimisticId: optimistic.id };
+    },
+    onSuccess: (serverMessage, _vars, context) => {
+      if (!serverMessage) return;
+
+      queryClient.setQueryData<MessagesCache>(messagesKey(roomId), (old) => {
+        const withoutPending =
+          old?.messages.filter((m) => m.id !== context?.optimisticId) ?? [];
+        return appendMessage({ messages: withoutPending }, serverMessage);
+      });
+    },
+    onError: (_err, _vars, context) => {
+      queryClient.setQueryData<MessagesCache>(messagesKey(roomId), (old) => ({
+        messages:
+          old?.messages.filter((m) => m.id !== context?.optimisticId) ?? [],
+      }));
     },
   });
 
   useRealtime({
     channels: [roomId],
     events: ["chat.message", "chat.destroy"],
-    onData: ({ event }) => {
-      if (event === "chat.message") {
-        refetch();
+    enabled: joined,
+    onData: (payload) => {
+      if (payload.event === "chat.message") {
+        queryClient.setQueryData<MessagesCache>(messagesKey(roomId), (old) =>
+          appendMessage(old, payload.data),
+        );
       }
 
-      if (event === "chat.destroy") {
+      if (payload.event === "chat.destroy") {
         router.push("/?destroyed=true");
       }
     },

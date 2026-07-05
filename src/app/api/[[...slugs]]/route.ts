@@ -80,6 +80,8 @@ const messages = new Elysia({ prefix: "/messages" })
       await redis.expire(`messages:${roomId}`, remaining);
       await redis.expire(`history:${roomId}`, remaining);
       await redis.expire(roomId, remaining);
+
+      return message;
     },
     {
       query: z.object({ roomId: z.string() }),
