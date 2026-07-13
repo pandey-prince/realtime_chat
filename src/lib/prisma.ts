@@ -1,42 +1,32 @@
 import { PrismaClient } from "@prisma/client";
 
-function isCachedPlanError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    String((error as { message: unknown }).message).includes(
-      "cached plan must not change result type",
-    )
-  );
+function databaseUrl() {
+  const raw = process.env.DATABASE_URL;
+  if (!raw) return undefined;
+
+  try {
+    const url = new URL(raw);
+    // Neon pooled URLs need this so Prisma skips prepared statements;
+    // otherwise DDL (e.g. VarChar→Text) breaks until the pool recycles.
+    if (!url.searchParams.has("pgbouncer")) {
+      url.searchParams.set("pgbouncer", "true");
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 function createPrismaClient() {
-  const client = new PrismaClient({
-    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
-  });
+  const url = databaseUrl();
 
-  return client.$extends({
-    query: {
-      $allModels: {
-        async $allOperations({ args, query }) {
-          try {
-            return await query(args);
-          } catch (error) {
-            // Neon/PgBouncer may keep prepared statements after DDL (e.g. VarChar→Text).
-            if (!isCachedPlanError(error)) throw error;
-            await client.$disconnect();
-            return await query(args);
-          }
-        },
-      },
-    },
+  return new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
+    ...(url ? { datasources: { db: { url } } } : {}),
   });
 }
 
-type AppPrisma = ReturnType<typeof createPrismaClient>;
-
-const globalForPrisma = globalThis as unknown as { prisma?: AppPrisma };
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 export const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
