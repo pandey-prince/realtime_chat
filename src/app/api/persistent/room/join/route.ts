@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { nanoid } from "nanoid";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   normalizeRoomCode,
@@ -12,6 +13,46 @@ import {
   createSystemMessage,
   emitMemberJoined,
 } from "@/app/api/[[...slugs]]/persistent";
+
+function joinResponse(
+  memberCount: number,
+  cookieName: string,
+  token: string,
+) {
+  const response = NextResponse.json({ ok: true, memberCount });
+  response.cookies.set(cookieName, token, {
+    httpOnly: true,
+    path: "/",
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  });
+  return response;
+}
+
+async function memberCountForRoom(roomId: string) {
+  return prisma.persistentMember.count({ where: { roomId } });
+}
+
+async function reuseMemberBySender(
+  roomId: string,
+  sender: string,
+  cookieName: string,
+) {
+  const existing = await prisma.persistentMember.findUnique({
+    where: { roomId_sender: { roomId, sender } },
+  });
+
+  if (!existing) return null;
+
+  const token = nanoid();
+  await prisma.persistentMember.update({
+    where: { id: existing.id },
+    data: { token },
+  });
+
+  const memberCount = await memberCountForRoom(roomId);
+  return joinResponse(memberCount, cookieName, token);
+}
 
 export async function POST(req: NextRequest) {
   const rawCode = req.nextUrl.searchParams.get("code");
@@ -54,27 +95,21 @@ export async function POST(req: NextRequest) {
   }
 
   const cookieName = persistentAuthCookieName(code);
-  const existing = req.cookies.get(cookieName)?.value;
+  const cookieToken = req.cookies.get(cookieName)?.value;
 
-  if (existing) {
+  if (cookieToken) {
     const member = await prisma.persistentMember.findFirst({
-      where: { roomId: room.id, token: existing },
+      where: { roomId: room.id, token: cookieToken },
     });
 
-    if (member) {
-      if (member.sender !== username) {
-        await prisma.persistentMember.update({
-          where: { id: member.id },
-          data: { sender: username },
-        });
-      }
-
-      const memberCount = await prisma.persistentMember.count({
-        where: { roomId: room.id },
-      });
+    if (member && member.sender === username) {
+      const memberCount = await memberCountForRoom(room.id);
       return NextResponse.json({ ok: true, memberCount });
     }
   }
+
+  const reused = await reuseMemberBySender(room.id, username, cookieName);
+  if (reused) return reused;
 
   const token = nanoid();
 
@@ -102,20 +137,16 @@ export async function POST(req: NextRequest) {
     await createSystemMessage(room.id, code, "A user joined the room.");
     await emitMemberJoined(code, result.memberCount);
 
-    const response = NextResponse.json({
-      ok: true,
-      memberCount: result.memberCount,
-    });
-
-    response.cookies.set(cookieName, token, {
-      httpOnly: true,
-      path: "/",
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-    });
-
-    return response;
+    return joinResponse(result.memberCount, cookieName, token);
   } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      const raced = await reuseMemberBySender(room.id, username, cookieName);
+      if (raced) return raced;
+    }
+
     console.error("Persistent join failed:", error);
     return NextResponse.json({ error: "join-failed" }, { status: 500 });
   }

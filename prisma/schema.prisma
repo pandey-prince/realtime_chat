@@ -27,6 +27,7 @@ model PersistentMember {
   joinedAt DateTime       @default(now())
   room     PersistentRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
+  @@unique([roomId, sender])
   @@index([roomId])
 }
 
