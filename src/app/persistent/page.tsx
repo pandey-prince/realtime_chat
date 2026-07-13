@@ -2,6 +2,12 @@
 
 import { useUsername } from "@/hooks/use-username";
 import { client } from "@/lib/client";
+import {
+  PASSPHRASE_MAX,
+  PASSPHRASE_MIN,
+  prepareRoomE2eMaterial,
+  validatePassphrase,
+} from "@/lib/e2e";
 import { normalizeRoomCode } from "@/lib/persistent-room";
 import { useMutation } from "@tanstack/react-query";
 import Link from "next/link";
@@ -16,6 +22,14 @@ const Page = () => (
 
 export default Page;
 
+function storePassphrase(code: string, passphrase: string) {
+  try {
+    sessionStorage.setItem(`persist_e2e_pass_${code}`, passphrase);
+  } catch {
+    // ignore
+  }
+}
+
 function PersistentLobby() {
   const { username } = useUsername();
   const router = useRouter();
@@ -25,18 +39,39 @@ function PersistentLobby() {
 
   const [roomName, setRoomName] = useState("");
   const [createCode, setCreateCode] = useState("");
+  const [createPassphrase, setCreatePassphrase] = useState("");
+  const [createPassphraseConfirm, setCreatePassphraseConfirm] = useState("");
   const [joinCode, setJoinCode] = useState("");
+  const [joinPassphrase, setJoinPassphrase] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
   const { mutate: createRoom, isPending: creating } = useMutation({
     mutationFn: async () => {
       setFormError(null);
+
+      const passphrase = validatePassphrase(createPassphrase);
+      if (!passphrase) {
+        setFormError(
+          `Passphrase must be ${PASSPHRASE_MIN}–${PASSPHRASE_MAX} characters.`,
+        );
+        return;
+      }
+      if (createPassphrase !== createPassphraseConfirm) {
+        setFormError("Passphrases do not match.");
+        return;
+      }
+
+      const { e2eSalt, e2eVerifier } = await prepareRoomE2eMaterial(passphrase);
+
       const res = await client.persistent.room.create.post({
         name: roomName,
         code: createCode.trim() || undefined,
+        e2eSalt,
+        e2eVerifier,
       });
 
       if (res.status === 200 && res.data && "code" in res.data) {
+        storePassphrase(res.data.code, passphrase);
         router.push(`/persistent/${res.data.code}`);
         return;
       }
@@ -44,9 +79,14 @@ function PersistentLobby() {
       const err = res.data as { error?: string } | null;
       if (err?.error === "rate-limited")
         setFormError("Too many requests. Please wait and try again.");
-      else if (err?.error === "invalid-code") setFormError("Invalid room code. Use 4–16 alphanumeric characters.");
-      else if (err?.error === "code-taken") setFormError("That room code is already taken.");
-      else if (err?.error === "invalid-name") setFormError("Please enter a valid room name.");
+      else if (err?.error === "invalid-code")
+        setFormError("Invalid room code. Use 4–16 alphanumeric characters.");
+      else if (err?.error === "code-taken")
+        setFormError("That room code is already taken.");
+      else if (err?.error === "invalid-name")
+        setFormError("Please enter a valid room name.");
+      else if (err?.error === "invalid-e2e-material")
+        setFormError("Could not set up encryption. Try again.");
       else setFormError("Could not create room. Try again.");
     },
   });
@@ -58,8 +98,24 @@ function PersistentLobby() {
       setFormError("Invalid room code. Use 4–16 alphanumeric characters.");
       return;
     }
+    const passphrase = validatePassphrase(joinPassphrase);
+    if (!passphrase) {
+      setFormError(
+        `Passphrase must be ${PASSPHRASE_MIN}–${PASSPHRASE_MAX} characters.`,
+      );
+      return;
+    }
+    storePassphrase(code, passphrase);
     router.push(`/persistent/${code}`);
   };
+
+  const canCreate =
+    Boolean(roomName.trim()) &&
+    createPassphrase.length >= PASSPHRASE_MIN &&
+    createPassphrase === createPassphraseConfirm;
+
+  const canJoin =
+    Boolean(joinCode.trim()) && joinPassphrase.length >= PASSPHRASE_MIN;
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
@@ -75,7 +131,7 @@ function PersistentLobby() {
             {">"}persistent_rooms
           </h1>
           <p className="text-zinc-500 text-sm">
-            Create or join a room. Messages are saved permanently.
+            Passphrase-encrypted rooms. Messages are saved as ciphertext only.
           </p>
         </div>
 
@@ -171,9 +227,33 @@ function PersistentLobby() {
               maxLength={16}
               className="w-full bg-black border border-zinc-800 focus:border-zinc-700 focus:outline-none text-zinc-100 placeholder:text-zinc-700 py-3 px-4 text-sm font-mono uppercase"
             />
+            <input
+              type="password"
+              value={createPassphrase}
+              onChange={(e) => setCreatePassphrase(e.target.value)}
+              placeholder="Passphrase (min 8 chars)"
+              minLength={PASSPHRASE_MIN}
+              maxLength={PASSPHRASE_MAX}
+              autoComplete="new-password"
+              className="w-full bg-black border border-zinc-800 focus:border-zinc-700 focus:outline-none text-zinc-100 placeholder:text-zinc-700 py-3 px-4 text-sm"
+            />
+            <input
+              type="password"
+              value={createPassphraseConfirm}
+              onChange={(e) => setCreatePassphraseConfirm(e.target.value)}
+              placeholder="Confirm passphrase"
+              minLength={PASSPHRASE_MIN}
+              maxLength={PASSPHRASE_MAX}
+              autoComplete="new-password"
+              className="w-full bg-black border border-zinc-800 focus:border-zinc-700 focus:outline-none text-zinc-100 placeholder:text-zinc-700 py-3 px-4 text-sm"
+            />
+            <p className="text-[11px] text-zinc-600">
+              Share the passphrase separately — anyone with it can read this
+              room. Stored only in this tab&apos;s session.
+            </p>
             <button
               onClick={() => createRoom()}
-              disabled={!roomName.trim() || creating}
+              disabled={!canCreate || creating}
               className="w-full bg-blue-600 text-white p-3 text-sm font-bold hover:bg-blue-500 transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
             >
               {creating ? "CREATING..." : "CREATE ROOM"}
@@ -195,9 +275,22 @@ function PersistentLobby() {
               maxLength={16}
               className="w-full bg-black border border-zinc-800 focus:border-zinc-700 focus:outline-none text-zinc-100 placeholder:text-zinc-700 py-3 px-4 text-sm font-mono uppercase"
             />
+            <input
+              type="password"
+              value={joinPassphrase}
+              onChange={(e) => setJoinPassphrase(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleJoin();
+              }}
+              placeholder="Room passphrase"
+              minLength={PASSPHRASE_MIN}
+              maxLength={PASSPHRASE_MAX}
+              autoComplete="current-password"
+              className="w-full bg-black border border-zinc-800 focus:border-zinc-700 focus:outline-none text-zinc-100 placeholder:text-zinc-700 py-3 px-4 text-sm"
+            />
             <button
               onClick={handleJoin}
-              disabled={!joinCode.trim()}
+              disabled={!canJoin}
               className="w-full bg-zinc-100 text-black p-3 text-sm font-bold hover:bg-zinc-50 transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
             >
               JOIN ROOM

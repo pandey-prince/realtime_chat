@@ -8,13 +8,15 @@ datasource db {
 }
 
 model PersistentRoom {
-  id        String    @id @default(cuid())
-  code      String    @unique
-  name      String
-  createdAt DateTime  @default(now())
-  deletedAt DateTime?
-  members   PersistentMember[]
-  messages  PersistentMessage[]
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+  e2eSalt     String?
+  e2eVerifier String?
+  members     PersistentMember[]
+  messages    PersistentMessage[]
 
   @@index([deletedAt])
 }
@@ -35,7 +37,7 @@ model PersistentMessage {
   id        String         @id @default(cuid())
   roomId    String
   sender    String
-  text      String         @db.VarChar(1000)
+  text      String
   createdAt DateTime       @default(now())
   room      PersistentRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
 

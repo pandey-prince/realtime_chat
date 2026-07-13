@@ -5,7 +5,7 @@ import { z } from "zod";
 export const messageSchema = z.object({
   id: z.string(),
   sender: z.string(),
-  text: z.string(),
+  text: z.string().max(8192),
   timestamp: z.number(),
   roomId: z.string(),
   token: z.string().optional(),

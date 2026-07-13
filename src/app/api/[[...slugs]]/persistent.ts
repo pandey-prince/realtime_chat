@@ -16,6 +16,10 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { persistentAuthMiddleware } from "./persistent-auth";
 
+const MESSAGE_CIPHERTEXT_MAX = 8192;
+const E2E_SALT_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const E2E_VERIFIER_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
+
 function toClientMessage(
   msg: {
     id: string;
@@ -38,14 +42,28 @@ function toClientMessage(
   };
 }
 
-async function recreatePersistentRoom(roomId: string, name: string) {
+function isValidE2eMaterial(salt: string, verifier: string) {
+  return E2E_SALT_PATTERN.test(salt) && E2E_VERIFIER_PATTERN.test(verifier);
+}
+
+async function recreatePersistentRoom(
+  roomId: string,
+  name: string,
+  e2eSalt: string,
+  e2eVerifier: string,
+) {
   return prisma.$transaction(async (tx) => {
     await tx.persistentMessage.deleteMany({ where: { roomId } });
     await tx.persistentMember.deleteMany({ where: { roomId } });
 
     return tx.persistentRoom.update({
       where: { id: roomId },
-      data: { name, deletedAt: null },
+      data: {
+        name,
+        deletedAt: null,
+        e2eSalt,
+        e2eVerifier,
+      },
       select: { code: true, name: true },
     });
   });
@@ -70,6 +88,13 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
         return { error: "invalid-name" };
       }
 
+      const e2eSalt = body.e2eSalt.trim();
+      const e2eVerifier = body.e2eVerifier.trim();
+      if (!isValidE2eMaterial(e2eSalt, e2eVerifier)) {
+        set.status = 400;
+        return { error: "invalid-e2e-material" };
+      }
+
       const customCode = body.code?.trim();
       let code: string;
 
@@ -92,13 +117,18 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
             return { error: "code-taken" };
           }
 
-          const room = await recreatePersistentRoom(existing.id, name);
+          const room = await recreatePersistentRoom(
+            existing.id,
+            name,
+            e2eSalt,
+            e2eVerifier,
+          );
           return room;
         }
 
         try {
           const room = await prisma.persistentRoom.create({
-            data: { code, name },
+            data: { code, name, e2eSalt, e2eVerifier },
             select: { code: true, name: true },
           });
           return room;
@@ -123,7 +153,12 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
         });
 
         if (existing?.deletedAt) {
-          const room = await recreatePersistentRoom(existing.id, name);
+          const room = await recreatePersistentRoom(
+            existing.id,
+            name,
+            e2eSalt,
+            e2eVerifier,
+          );
           return room;
         }
 
@@ -133,7 +168,7 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
 
         try {
           const room = await prisma.persistentRoom.create({
-            data: { code, name },
+            data: { code, name, e2eSalt, e2eVerifier },
             select: { code: true, name: true },
           });
           return room;
@@ -155,6 +190,8 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
       body: z.object({
         name: z.string().max(100),
         code: z.string().max(16).optional(),
+        e2eSalt: z.string().max(64),
+        e2eVerifier: z.string().max(128),
       }),
     },
   )
@@ -173,6 +210,8 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
           code: true,
           name: true,
           createdAt: true,
+          e2eSalt: true,
+          e2eVerifier: true,
           _count: { select: { members: true } },
         },
       });
@@ -187,6 +226,8 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
         name: room.name,
         createdAt: room.createdAt.getTime(),
         memberCount: room._count.members,
+        e2eSalt: room.e2eSalt,
+        e2eVerifier: room.e2eVerifier,
       };
     },
     { query: z.object({ code: z.string() }) },
@@ -283,6 +324,11 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
         return { error: "rate-limited", retryAfter: rate.retryAfter };
       }
 
+      if (!body.text || body.text.length > MESSAGE_CIPHERTEXT_MAX) {
+        set.status = 400;
+        return { error: "invalid-text" };
+      }
+
       const message = await prisma.persistentMessage.create({
         data: {
           roomId: persistentAuth.roomId,
@@ -306,7 +352,7 @@ export const persistentRoutes = new Elysia({ prefix: "/persistent" })
     {
       query: z.object({ code: z.string() }),
       body: z.object({
-        text: z.string().max(1000),
+        text: z.string().max(MESSAGE_CIPHERTEXT_MAX),
       }),
     },
   );

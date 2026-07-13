@@ -147,7 +147,7 @@ function Lobby() {
                 PERSISTENT ROOMS
               </h2>
               <p className="text-zinc-500 text-xs mt-1">
-                Up to 10 users · saved in database · join by code
+                Up to 10 users · passphrase E2E · join by code
               </p>
             </div>
             <Link
