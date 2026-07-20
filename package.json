@@ -5,7 +5,7 @@
   "homepage": "https://secure-safechat.vercel.app",
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/vercel-build.mjs",
+    "build": "node vercel-build.mjs",
     "start": "next start",
     "lint": "eslint",
     "postinstall": "prisma generate"
